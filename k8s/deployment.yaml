@@ -26,5 +26,5 @@ spec:
         - name: THIRD_PARTY_API_KEY
           valueFrom:
             secretKeyRef:
-              name: api-key-thirdparty
+              name: backend-secrets
               key: api-key-thirdparty
