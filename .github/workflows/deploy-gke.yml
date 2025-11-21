@@ -1,0 +1,59 @@
+name: Deploy Backend to GKE (GCP)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      REPO: ${{ vars.GCP_ARTIFACT_REPO }}
+      CLUSTER_NAME: ${{ vars.GCP_GKE_CLUSTER }}
+      CLUSTER_LOCATION: ${{ vars.GCP_GKE_LOCATION }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+        service_account: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+    - uses: google-github-actions/setup-gcloud@v2
+
+    - name: Configure Docker auth
+      run: gcloud auth configure-docker ${REGION}-docker.pkg.dev
+
+    - name: Build & Push Image
+      run: |
+        IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/backend:${GITHUB_SHA}"
+        echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+        docker build -t $IMAGE_URI .
+        docker push $IMAGE_URI
+
+    - uses: google-github-actions/get-gke-credentials@v2
+      with:
+        cluster_name: ${{ env.CLUSTER_NAME }}
+        location: ${{ env.CLUSTER_LOCATION }}
+
+    - name: Sync secrets
+      run: |
+        DB_PASSWORD=$(gcloud secrets versions access latest --secret=db-password --project=$PROJECT_ID)
+        API_KEY_3P=$(gcloud secrets versions access latest --secret=api-key-thirdparty --project=$PROJECT_ID)
+        kubectl create secret generic backend-secrets           --from-literal=db-password="$DB_PASSWORD"           --from-literal=api-key-thirdparty="$API_KEY_3P"           --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Patch manifests
+      run: sed -i "s#IMAGE_URI_PLACEHOLDER#${IMAGE_URI}#g" k8s/deployment.yaml
+
+    - name: Deploy
+      run: |
+        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/service.yaml
+        kubectl rollout status deployment/backend-deployment
